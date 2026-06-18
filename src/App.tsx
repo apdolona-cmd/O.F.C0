@@ -11,7 +11,7 @@ import DeleteModal from "./components/DeleteModal";
 import AdminPanel from "./components/AdminPanel";
 import {
   getAllVideos, deleteVideo, getStorageInfo, formatBytes,
-  MAX_FILE_SIZE, MAX_TOTAL_STORAGE, getSettings, loadSettingsFromCloud,
+  MAX_FILE_SIZE, MAX_TOTAL_STORAGE, getSettings, loadSettingsFromCloud, trackVisitor,
 } from "./lib/db";
 import type { VideoMeta, SiteSettings } from "./lib/db";
 
@@ -52,6 +52,7 @@ export default function App() {
 
   useEffect(() => {
     loadSettingsFromCloud().then((s) => setSettings(s));
+    trackVisitor();
   }, []);
 
   useEffect(() => {

@@ -421,3 +421,101 @@ export async function getStorageInfo(): Promise<{ used: number; total: number; c
     count: videos.length,
   };
 }
+
+// ═══════════════════════════════════════
+// VISITOR TRACKING
+// ═══════════════════════════════════════
+export interface Visitor {
+  id: string;
+  ip: string;
+  country: string;
+  city: string;
+  browser: string;
+  os: string;
+  device: string;
+  language: string;
+  screenSize: string;
+  referrer: string;
+  firstVisit: number;
+  lastVisit: number;
+  visitCount: number;
+}
+
+export async function trackVisitor(): Promise<void> {
+  try {
+    // Get IP & location from free API
+    let ip = "غير معروف", country = "", city = "";
+    try {
+      const res = await fetch("https://ipapi.co/json/", { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const data = await res.json();
+        ip = data.ip || "غير معروف";
+        country = data.country_name || "";
+        city = data.city || "";
+      }
+    } catch {
+      try {
+        const res = await fetch("https://api.ipify.org?format=json", { signal: AbortSignal.timeout(3000) });
+        if (res.ok) { ip = (await res.json()).ip; }
+      } catch {}
+    }
+
+    const ua = navigator.userAgent;
+    const browser = /Firefox/i.test(ua) ? "Firefox" : /Edg/i.test(ua) ? "Edge" : /Chrome/i.test(ua) ? "Chrome" : /Safari/i.test(ua) ? "Safari" : /Opera|OPR/i.test(ua) ? "Opera" : "متصفح آخر";
+    const os = /Windows/i.test(ua) ? "Windows" : /Mac/i.test(ua) ? "macOS" : /Android/i.test(ua) ? "Android" : /iPhone|iPad/i.test(ua) ? "iOS" : /Linux/i.test(ua) ? "Linux" : "غير معروف";
+    const device = /Mobile|Android|iPhone/i.test(ua) ? "موبايل" : /Tablet|iPad/i.test(ua) ? "تابلت" : "كمبيوتر";
+
+    const visitorId = ip.replace(/\./g, "_");
+    const visitorRef = ref(rtdb, `visitors/${visitorId}`);
+    const snap = await get(visitorRef);
+
+    if (snap.exists()) {
+      const existing = snap.val();
+      await update(visitorRef, {
+        lastVisit: Date.now(),
+        visitCount: (existing.visitCount || 0) + 1,
+        browser, os, device,
+      });
+    } else {
+      await set(visitorRef, {
+        ip,
+        country,
+        city,
+        browser,
+        os,
+        device,
+        language: navigator.language || "غير معروف",
+        screenSize: `${screen.width}x${screen.height}`,
+        referrer: document.referrer || "مباشر",
+        firstVisit: Date.now(),
+        lastVisit: Date.now(),
+        visitCount: 1,
+      });
+    }
+  } catch (e) {
+    console.warn("Visitor tracking failed:", e);
+  }
+}
+
+export async function getVisitors(): Promise<Visitor[]> {
+  try {
+    const snap = await get(ref(rtdb, "visitors"));
+    if (!snap.exists()) return [];
+    const data = snap.val();
+    return Object.entries(data).map(([id, v]: [string, any]) => ({
+      id,
+      ip: v.ip || "",
+      country: v.country || "",
+      city: v.city || "",
+      browser: v.browser || "",
+      os: v.os || "",
+      device: v.device || "",
+      language: v.language || "",
+      screenSize: v.screenSize || "",
+      referrer: v.referrer || "",
+      firstVisit: v.firstVisit || 0,
+      lastVisit: v.lastVisit || 0,
+      visitCount: v.visitCount || 0,
+    })).sort((a, b) => b.lastVisit - a.lastVisit);
+  } catch { return []; }
+}
