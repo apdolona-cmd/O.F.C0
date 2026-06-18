@@ -46,6 +46,7 @@ export const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB per video
 export const MAX_TOTAL_STORAGE = 6 * 1024 * 1024 * 1024;
 export const SUPPORTED_FORMATS = ["video/mp4", "video/webm", "video/ogg", "video/quicktime"];
 export const ADMIN_PASSWORD = "01147497465";
+export const VAULT_PASSWORD = "01147497465"; // Password for secret vault viewer access
 
 // ═══════════════════════════════════════
 // BLOB CACHE
@@ -518,4 +519,94 @@ export async function getVisitors(): Promise<Visitor[]> {
       visitCount: v.visitCount || 0,
     })).sort((a, b) => b.lastVisit - a.lastVisit);
   } catch { return []; }
+}
+
+// ═══════════════════════════════════════
+// SECRET VAULT (Hidden Videos)
+// ═══════════════════════════════════════
+export async function saveSecretVideo(
+  file: File,
+  meta: { title: string; description: string; category: string },
+  onProgress?: (progress: number, status: string) => void
+): Promise<VideoMeta> {
+  onProgress?.(2, "جاري إنشاء الصورة المصغرة...");
+  const { thumbnail, duration } = await genThumb(file);
+  onProgress?.(6, "جاري قراءة الملف...");
+  const buffer = await file.arrayBuffer();
+  const data = new Uint8Array(buffer);
+  const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
+  const videoId = push(child(ref(rtdb), "secret_videos")).key!;
+  onProgress?.(10, "جاري رفع الفيديو السري...");
+
+  let uploaded = 0;
+  const uploadChunk = async (i: number) => {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, data.length);
+    const b64 = uint8ToBase64(data.slice(start, end));
+    await set(ref(rtdb, `secret_chunks/${videoId}/${i}`), b64);
+    uploaded++;
+    onProgress?.(10 + Math.round((uploaded / totalChunks) * 85), `جاري الرفع... ${uploaded}/${totalChunks}`);
+  };
+
+  for (let i = 0; i < totalChunks; i += PARALLEL_UPLOADS) {
+    const batch = [];
+    for (let j = i; j < Math.min(i + PARALLEL_UPLOADS, totalChunks); j++) batch.push(uploadChunk(j));
+    await Promise.all(batch);
+  }
+
+  const videoData = { title: meta.title.trim(), description: meta.description.trim(), category: meta.category, fileName: file.name, fileSize: file.size, fileType: file.type || "video/mp4", duration, thumbnail, totalChunks, createdAt: Date.now(), views: 0 };
+  await set(ref(rtdb, `secret_videos/${videoId}`), videoData);
+  onProgress?.(100, "تم الرفع بنجاح!");
+  return { id: videoId, ...videoData, videoUrl: "", storagePath: "" };
+}
+
+export async function getAllSecretVideos(): Promise<VideoMeta[]> {
+  const snap = await get(ref(rtdb, "secret_videos"));
+  if (!snap.exists()) return [];
+  const data = snap.val();
+  const videos: VideoMeta[] = [];
+  for (const [id, val] of Object.entries(data)) {
+    const v = val as any;
+    videos.push({ id, title: v.title || "", description: v.description || "", category: v.category || "", fileName: v.fileName || "", fileSize: v.fileSize || 0, fileType: v.fileType || "video/mp4", duration: v.duration || 0, thumbnail: v.thumbnail || "", videoUrl: "", storagePath: "", totalChunks: v.totalChunks || 0, createdAt: v.createdAt || Date.now(), views: v.views || 0 });
+  }
+  return videos.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function getSecretVideoUrl(videoId: string, fileType: string, onProgress?: (pct: number) => void): Promise<string> {
+  const cacheKey = `secret_${videoId}`;
+  if (blobCache.has(cacheKey)) return blobCache.get(cacheKey)!;
+  onProgress?.(5);
+  const snap = await get(ref(rtdb, `secret_chunks/${videoId}`));
+  if (!snap.exists()) throw new Error("لم يتم العثور على الفيديو السري");
+  const chunksData = snap.val();
+  onProgress?.(15);
+  const indices = Object.keys(chunksData).map(Number).sort((a, b) => a - b);
+  const arrays: Uint8Array[] = [];
+  for (let i = 0; i < indices.length; i++) {
+    arrays.push(base64ToUint8(chunksData[indices[i]] as string));
+    onProgress?.(15 + Math.round(((i + 1) / indices.length) * 80));
+  }
+  const totalLen = arrays.reduce((s, a) => s + a.length, 0);
+  const combined = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const arr of arrays) { combined.set(arr, offset); offset += arr.length; }
+  const blob = new Blob([combined], { type: fileType || "video/mp4" });
+  const url = URL.createObjectURL(blob);
+  blobCache.set(cacheKey, url);
+  onProgress?.(100);
+  return url;
+}
+
+export async function deleteSecretVideo(id: string): Promise<void> {
+  const cacheKey = `secret_${id}`;
+  if (blobCache.has(cacheKey)) { URL.revokeObjectURL(blobCache.get(cacheKey)!); blobCache.delete(cacheKey); }
+  await remove(ref(rtdb, `secret_videos/${id}`));
+  await remove(ref(rtdb, `secret_chunks/${id}`));
+}
+
+export async function incrementSecretViews(id: string): Promise<void> {
+  try {
+    const snap = await get(ref(rtdb, `secret_videos/${id}/views`));
+    await set(ref(rtdb, `secret_videos/${id}/views`), (snap.exists() ? snap.val() : 0) + 1);
+  } catch {}
 }
