@@ -235,8 +235,10 @@ export function validateFile(file: File): { valid: boolean; error?: string } {
 }
 
 // ═══════════════════════════════════════
-// SAVE VIDEO
+// SAVE VIDEO (Parallel chunk upload for max speed)
 // ═══════════════════════════════════════
+const PARALLEL_UPLOADS = 6; // Upload 6 chunks at the same time
+
 export async function saveVideo(
   file: File,
   meta: { title: string; description: string; category: string },
@@ -245,27 +247,33 @@ export async function saveVideo(
   onProgress?.(2, "جاري إنشاء الصورة المصغرة...");
   const { thumbnail, duration } = await genThumb(file);
 
-  onProgress?.(8, "جاري قراءة الملف...");
+  onProgress?.(6, "جاري قراءة الملف...");
   const buffer = await file.arrayBuffer();
   const data = new Uint8Array(buffer);
   const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
 
-  // Create video entry
   const videoId = push(child(ref(rtdb), "videos")).key!;
   
   onProgress?.(10, "جاري رفع الفيديو...");
 
-  // Upload chunks
-  for (let i = 0; i < totalChunks; i++) {
+  // Parallel chunk upload
+  let uploaded = 0;
+  const uploadChunk = async (i: number) => {
     const start = i * CHUNK_SIZE;
     const end = Math.min(start + CHUNK_SIZE, data.length);
-    const chunk = data.slice(start, end);
-    const b64 = uint8ToBase64(chunk);
-
+    const b64 = uint8ToBase64(data.slice(start, end));
     await set(ref(rtdb, `chunks/${videoId}/${i}`), b64);
+    uploaded++;
+    onProgress?.(10 + Math.round((uploaded / totalChunks) * 85), `جاري الرفع... ${uploaded}/${totalChunks}`);
+  };
 
-    const pct = 10 + Math.round(((i + 1) / totalChunks) * 85);
-    onProgress?.(pct, `جاري الرفع... ${i + 1}/${totalChunks}`);
+  // Process in parallel batches
+  for (let i = 0; i < totalChunks; i += PARALLEL_UPLOADS) {
+    const batch = [];
+    for (let j = i; j < Math.min(i + PARALLEL_UPLOADS, totalChunks); j++) {
+      batch.push(uploadChunk(j));
+    }
+    await Promise.all(batch);
   }
 
   // Save metadata
